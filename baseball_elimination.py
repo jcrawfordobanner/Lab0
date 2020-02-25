@@ -8,6 +8,7 @@ import picos as pic
 import networkx as nx
 import itertools
 import cvxopt
+import copy
 
 
 class Division:
@@ -90,11 +91,25 @@ class Division:
         return: dictionary of saturated edges that maps team pairs to
         the amount of additional games they have against each other
         '''
-
+        self.G.clear()
         saturated_edges = {}
+        self.G.add_node("S")
+        self.G.add_node("T")
+        versus=copy.deepcopy(self.teams)
+        del versus[teamID]
+        for key, value in versus.items():
+            self.G.add_node(value.name)
+            self.G.add_edge(value.name,"T",capacity=(self.teams[teamID].wins + self.teams[teamID].remaining - value.wins))
 
-        #TODO: implement this
-
+            for key2, value2 in versus.items():
+                if (not(self.G.has_node(value2.name))):
+                    self.G.add_node((value.name,value2.name))
+                    self.G.add_edge("S",(value.name,value2.name),capacity=value.get_against(value2.ID))
+                    self.G.add_edge((value.name,value2.name),value.name)
+                    saturated_edges[("S",(value.name,value2.name))] = value.get_against(value2.ID)
+                elif value.name!=value2.name:
+                    self.G.add_edge((value2.name,value.name),value.name)
+        #print(self.G.edges)
         return saturated_edges
 
     def network_flows(self, saturated_edges):
@@ -109,7 +124,14 @@ class Division:
         '''
 
         #TODO: implement this
-
+        max_flow, flows = nx.maximum_flow(self.G,'S','T')
+        for key,value in flows['S'].items():
+            if value != saturated_edges[('S',key)]:
+                #print(value)
+                #print(flows)
+                self.G.clear()
+                return True
+        self.G.clear()
         return False
 
     def linear_programming(self, saturated_edges):
@@ -125,9 +147,48 @@ class Division:
         '''
 
         maxflow=pic.Problem()
+        y=[]
+        i=0
+        #F=maxflow.add_variable('F',1)
+        for node in self.G.neighbors("S"):
+            y.append(maxflow.add_variable('y[{0}]'.format(i),1))
+            maxflow.add_constraint(y[i]<self.G.edges['S',node]['capacity'])
+            i+=1
+        j=0
+        maxflow.set_objective('max',sum(y))
+        for node in self.G.neighbors("S"):
+            maxflow.add_constraint(y[j]>0)
+            j+=1
+            capacitance=[]
+            for node2 in self.G.neighbors(node):
+                capacitance.append(i)
+                y.append(maxflow.add_variable('y[{0}]'.format(i),1))
+                maxflow.add_constraint(y[i]>0)
+                i+=1
+            maxflow.add_constraint(y[j]==sum(y[capacitance[0]:capacitance[-1]+1]))
 
+        for node in self.G.predecessors("T"):
+            y.append(maxflow.add_variable('y[{0}]'.format(i),1))
+            maxflow.add_constraint(y[i]<self.G.edges[node,'T']['capacity'])
+            maxflow.add_constraint(y[i]>0)
+            maxflow.add_constraint(y[i]==sum(y[i-(2*j):i-(2*j)+2]))
+            i+=1
+        #maxflow.add_list_of_constraints(
+        #  [pic.sum([y[p,i] for p in self.G.predecessors(i)],'p','pred(i)')
+        #    == pic.sum([y[i,j] for j in self.G.successors(i)],'j','succ(i)')
+        #    for i in self.G.nodes() if i not in ("S","T")],
+        #  'i','nodes-(s,t)')
+        maxflow.solve(verbose=0,solver='glpk')
+        total_flow=0
+        for key, value in saturated_edges.items():
+            total_flow+=value
+        #print(maxflow)
+        #print(y[10])
+        #print(total_flow)
+        #print(maxflow.obj_value())
+        if(total_flow!=maxflow.obj_value()):
+            return True
         #TODO: implement this
-
         return False
 
 
@@ -189,7 +250,10 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         filename = sys.argv[1]
         division = Division(filename)
+    #    p=division.create_network(0)
+    #    print(division.linear_programming(p))
+
         for (ID, team) in division.teams.items():
-            print(f'{team.name}: Eliminated? {division.is_eliminated(team.ID, "Linear Programming")}')
+            print(f'{team.name}: Eliminated? {division.is_eliminated(team.ID, "Network Flows")}')
     else:
         print("To run this code, please specify an input file name. Example: python baseball_elimination.py teams2.txt.")
